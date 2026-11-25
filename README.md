@@ -9,18 +9,19 @@
 
 ## 📌 1. Executive Summary
 
-본 프로젝트는 대용량 물류 데이터를 효율적으로 가공하고, 시계열 데이터의 특수성(주간 요일성, 공휴일 쏠림, 자치구별 상권 차이)을 반영하여 **최대 정확도 94.6% (t+2 WAPE 5.38%)**의 수요예측 파이프라인을 구현한 결과물입니다.
+본 프로젝트는 대용량 물류 데이터를 효율적으로 가공하고, 시계열 데이터의 특수성(주간 요일성, 공휴일 쏠림, 자치구별 상권 차이)을 반영하여 **최대 정확도 94.6% (t+2 WAPE 5.38%)**의 수요예측 파이프라인을 구현한 결과물입니다. 또한 서울시 25개 자치구의 5개년 물동량 통계 검정(4-Step Sequential Test & Two-Way ANOVA) 통하여 물류 자원 최적 배치의 정량적 근거를 도출했습니다.
 
 ### 🎯 핵심 성과
 * **예측 오차율 극적 단축**: 초기 단일 모델 베이스라인(WAPE ~16%, MAPE ~65%) 대비 **Direct Multi-Step 분리 모델과 Target 기준 요일 정밀 시차 설계**를 적용하여 **WAPE 5.38% (t+2 기준)** 달성 및 전 구간(t+1 ~ t+7) **6.6% 이내 오차 평탄화**.
 * **대시보드 조인 병목 해소**: Looker Studio 자기결합(Self-Join) 시 발생하는 날짜 매칭 오류 및 렌더링 지연을 **BigQuery `LAG()` 윈도우 함수 및 CTE 기반 Single View** 설계로 처리 성능 **90% 이상 개선**.
+* **통계 검정 및 A/B 테스트 체계 구축**: 25개 자치구 병목 요일(Group A vs Group B) 4단계 통계 검정(Levene, Welch's t, Mann-Whitney U, Cohen's d) 기반 A/B 테스트와 Two-Way ANOVA
 * **안정적 오차 통제**: `np.log1p` 타깃 변환 및 자치구 물동량 스케일 가중치(`sample_weight`)를 결합하여 소형 자치구의 MAPE 폭증 현상을 **16% ~ 18%대로 완전 안착**.
 
 ### 🛠️ Tech Stack
-* **Languages & Libraries**: Python 3.12, Polars, LightGBM, SHAP, NumPy, Pandas, Scikit-Learn
+* **Languages & Libraries**: Python 3.12, Polars, LightGBM, SHAP, NumPy, Pandas, Scipy, Statsmodels, Scikit-Learn
 * **Data Engineering & Storage**: Apache Parquet, Google BigQuery (Standard SQL)
 * **Visualization & Analytics**: Looker Studio, Matplotlib, Seaborn
-* **Domain Focus**: Time-Series Forecasting, Feature Engineering
+* **Domain Focus**: A/B Testing, Causal Inference & Hypothesis Testing, Time-Series Forecasting, Feature Engineering
 
 ---
 
@@ -33,7 +34,8 @@
 | **Stage 1** | **Data Ingestion & Storage** | Raw CSV (45,000+ rows) 수집 후 Polars 기반 Columnar Format(Parquet)으로 변환하여 단일 스레드에서 멀티스레드 병렬 처리로 전환 및 데이터 압축 |
 | **Stage 2** | **Data Warehouse Layer** | Google BigQuery 단일 DW 구축 및 CTE 등 각 보드별 분석 뷰(View) 설계 (YoY, MoM, LQ, Peak Risk/PAR 등) |
 | **Stage 3** | **BI & Operations** | Looker Studio 대시보드 연동 (수송 개요, 자치구 LQ 특화 분석, 계절성 및 피크 위험 매트릭스 제공) |
-| **Stage 4** | **ML & Model Interpretability** | Direct Multi-Step (t+1 ~ t+7) 7개 독립 LightGBM 레그레서 학습, 백테스팅 및 SHAP TreeExplainer 모델 해석 |
+| **Stage 4** | **Statistical Testing & A/B Testing** | 서울 25개 자치구 4단계 통계 검정, Two-Way ANOVA 등 A/B 테스트 파이프라인 구축 |
+| **Stage 5** | **ML & Model Interpretability** | Direct Multi-Step (t+1 ~ t+7) 7개 독립 LightGBM 회귀 학습, 백테스팅 및 SHAP TreeExplainer 모델 해석 |
 
 ---
 
@@ -50,7 +52,27 @@ Looker Studio 데이터 블렌딩(Self-Join) 시 발생하는 특정 날짜 누�
 
 ---
 
-## 🤖 4. ML Pipeline & Feature Engineering
+## 🔬 4. Statistical Testing & A/B Testing
+> 📖 **[상세 통계 검정표 & A/B 테스트 명세서 보기 (docs/01_ab-testing-stat.md)](docs/01-ab-testing-stat.md)**
+
+### 1. 서울 25개 자치구 병목 요일 4단계 통계 검정 (4-Step Sequential Test)
+* **검정 목적**: 도착지 자치구(`RECEIVER_SIGUNGU_NM`) 단위로 **Group A(주말·공휴일 직후 2영업일: 월·화)**와 **Group B(평시: 수·목·금)** 간의 물동량 및 변동성 차이를 정량 입증.
+* **4단계 순차 검정 체계**:
+  1. **Levene's Test (분산 동질성)**: 비정규 분포에 강건한 검정 기법으로 두 그룹 간 이분산성 입증 ($p < 0.05$).
+  2. **Welch's t-test (평균 차이)**: 이분산성을 반영하여 Group A가 Group B 대비 평균 29.7% ~ 45.2% 물동량이 급증함을 입증 ($p < 0.001$).
+  3. **Mann-Whitney U Test (비모수 검정)**: 이상치 영향을 배제하고 중앙값 위치 이동 재확인 ($p < 0.001, r \ge 0.70$).
+  4. **Cohen's d (효과 크기)**: 대용량 표본의 $p$-value 착시를 넘어서는 강력한 실질적 효과 크기($d = 1.37 \sim 1.53$) 산출.
+
+### 2. 시기별(2019 / 2020-2022 / 2023) 이원 분산분석 (Two-Way ANOVA)
+* **검정 목적**: 팬데믹 전(2019), 팬데믹기(2020~2022), 엔데믹기(2023)에 따른 요일별 물동량 구조 변화 검정.
+* **ANOVA 결과**: 시기($Period$)와 요일 그룹($Group$) 간의 **교차 효과($Period \times Group, F = 3.65, p = 0.026$)가 통계적으로 유의미**함을 증명.
+* **운영 인사이트**: 팬데믹기 월·화 쏠림 비율(45.9% ~ 46.8%) 대비 엔데믹 이후 평탄화(42.0% ~ 43.7%) 현상을 규명하여 현장 인력 및 배차 재배치의 정량적 근거 제시.
+
+---
+
+## 🤖 5. ML Pipeline & Feature Engineering
+> 📖 **[상세 Multi-Step LightGBM 수요예측 모델링(docs/02-lgbm-forecasting-model.md)](docs/02-lgbm-forecasting-model.md)**
+
 
 ### 💡 5대 핵심 피처 엔지니어링 전략
 
@@ -62,19 +84,8 @@ Looker Studio 데이터 블렌딩(Self-Join) 시 발생하는 특정 날짜 누�
 | **Strategy 4** | **공휴일 사전 쏠림 & 이월 가중 스코어 (`impact_score`)** | 단순 이진 공휴일 변수 대신 `연휴 연속 일수 × D-1 쏠림` 스코어를 산출하여 명절/연휴 직전 및 직후 물동량 폭증을 모델링 |
 | **Strategy 5** | **중기 모멘텀 & 상대 비율 (`mid_term_momentum`)** | `최근 3일 이동평균 ÷ 14일 이동평균` 및 `동일 요일 ÷ 4주 이동평균` 비율 피처를 추가하여 t+3~t+4 과도기 오차 방어 |
 
-*(※ 상세 Python 모델링 소스코드는 `/src` 디렉토리 참조)*
+*(※ 상세 Python 모델링 소스코드는 `/notebook` 디렉토리 참조)*
 
----
-
-## 📊 5. Backtesting Results & Performance Comparison
-
-### 📈 베이스라인 대비 모델 고도화 과정 및 성과
-* **초기 단일 모델 베이스라인 (Initial Baseline)**: 
-  * 초기 단일 통합 모델 적용 시 **WAPE ~16.00%, MAPE ~65.00%**로, 소형 자치구 오차 및 공휴일 직후 오차 폭증 현상이 심각했습니다.
-* **1차 5대 전략 적용 (Direct Multi-Step + 로그 변환 + 가중치)**:
-  * 7개 모델 분리 및 `np.log1p` + `sample_weight` 적용으로 **WAPE 10.59% ~ 12.88%, MAPE 23.78% ~ 25.54%** 수준으로 1차 개선되었습니다.
-* **최종 고도화 모델 (Target 요일 정밀 매칭 + 동적 피처 재설계)**:
-  * Target 날짜 관점의 과거 동일 요일 실적 매칭 및 동적 카테고리 비율 적용으로 **WAPE 5.38% ~ 6.69%, MAPE 16.05% ~ 18.09%**로 오차가 절반 이하로 폭락하는 최종 성과를 거두었습니다.
 
 ### 📊 60일 Out-of-Time 백테스팅 오차 개선 비교 표
 
@@ -90,23 +101,7 @@ Looker Studio 데이터 블렌딩(Self-Join) 시 발생하는 특정 날짜 누�
 
 ---
 
-## 🔍 6. Model Interpretability & Feature Importance
-
-LightGBM Gain 중요도 산출 결과, 7개 모델 전체를 지배하는 주요 피처 분석 내용입니다.
-
-### 🏆 Top 5 Feature Importance (Gain)
-1. **`dayofweek` (요일 - Gain ~543,000)**: 택배 물동량의 주간 반복 파동을 지배하는 절대적 기준.
-2. **`is_off_day` (휴무일 여부 - Gain ~298,000)**: 일요일 및 공휴일의 0건 수량 배정을 차단하는 핵심 안전장치.
-3. **`same_dow_to_m28_ratio` (동일 요일 ÷ 28일 이동평균 - Gain ~97,117)**: t+3~t+7 중장기 구간에서 오차가 튀는 현상을 방어한 일등 공신.
-4. **`today_vol` (오늘 실적 - Gain ~92,000)**: 자치구별 기본 수량 스케일 보정.
-5. **`rolling_food_ratio_7` (최근 7일 동적 식품 비중 - Gain ~31,000)**: 상권 변화 트렌드 포착.
-
-### 💡 SHAP (TreeExplainer) 인사이트
-* **방향성 검증**: `pre_holiday_impact_score` 및 `same_dow_to_m28_ratio`의 값이 증가할수록 SHAP Value가 양(+)의 방향으로 크게 이동하여, 연휴 직전 출하 쏠림 및 상승 추세가 물동량 폭증을 직관적으로 유발함을 증명했습니다.
-
----
-
-## 💡 7. Troubleshooting & Lessons Learned
+## 💡 6. Troubleshooting & Lessons Learned
 
 ### Lesson 1: Lag Misalignment (시차 요일 불일치) 교정
 * **문제**: 기존 `vol_lag_{step+7}` 피처는 t+3 예측 모델에 '오늘 기준 7일 전(지난주 월요일)' 수량을 주입하여 목요일 예측값과 요일이 어긋나는 현상 발생.
@@ -122,13 +117,16 @@ LightGBM Gain 중요도 산출 결과, 7개 모델 전체를 지배하는 주요
 
 ---
 
-## 📂 8. Directory Structure
+## 📂 7. Directory Structure
 
 ```
 .
 ├── data/
 │   ├── DWC_KXLCLS_OD_DAY_SIDO_SEOULGU_201901.csv   	# 서울시에서 직접 받은 csv
 │   └── seoulgu.parquet   				# csv 파일 parquet으로 전환
+├── docs/
+│   └── 01-ab-testing-stat.md
+│   └── 02-lgbm-forecasting-model.md
 ├── sql/
 │   └── vw_base_parcel_data.sql
 │   └── vw_board1_monthly_growth.sql
